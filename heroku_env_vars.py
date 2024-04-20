@@ -121,13 +121,10 @@ def get_all_vars_into_matrix(heroku_app_targets=HEROKU_APPS):
     Returns:
         pd.DataFrame: DataFrame containing all environment variables for each app.
     """
-    # Initialize a list to store DataFrames
-    all_dataframes = []
     # first column is our required env vars
     df_required = pd.DataFrame(index=REQUIRED_ENV_VARS, columns=["REQUIRED_ENV_VARS"])
     df_required["REQUIRED_ENV_VARS"] = "Yes"
-    all_dataframes.append(df_required)
-
+    all_dataframes = [df_required]
     # second col is env vars in our local environment
     df_local, _ = get_local_env_vars()
     all_dataframes.append(df_local)
@@ -146,14 +143,14 @@ def get_all_vars_into_matrix(heroku_app_targets=HEROKU_APPS):
         # Append the DataFrame to the list
         all_dataframes.append(df_app_vars)
 
-    return pd.concat(all_dataframes, axis=1).fillna("not_set").sort_index()
+    df_final = pd.concat(all_dataframes, axis=1).fillna("not_set")
+    return df_final.groupby('REQUIRED_ENV_VARS', group_keys=False).apply(lambda x: x.sort_index())
+
 
 
 if __name__ == "__main__":
     df_final = get_all_vars_into_matrix()
+
     print(df_final)
-    # df_ci = get_circleci_env_vars()
-    # print(df_ci)
-    # df = get_local_env_vars()
-    # print(df)
+
 
