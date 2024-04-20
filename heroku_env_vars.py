@@ -45,6 +45,14 @@ REQUIRED_ENV_VARS = [
 ]
 
 
+def get_local_env_vars():
+    """pull all local env vars into a dataframe"""
+    env_vars_data = {var: os.getenv(var) for var in REQUIRED_ENV_VARS}
+    # Convert the dictionary to a pandas DataFrame
+    df_env_vars = pd.DataFrame.from_dict(env_vars_data, orient='index', columns=['local']).sort_index()
+    return df_env_vars, env_vars_data
+
+
 def get_heroku_env_vars(app_name="urban-robot-dev"):
     """
     Retrieves heroku env vars from a single heroku app
@@ -102,7 +110,7 @@ def get_circleci_env_vars(circleci_app_name=CIRCLECI_DEFAULT_APP):
         return None, None
 
 
-def get_all_vars_in_matrix(heroku_app_targets=HEROKU_APPS):
+def get_all_vars_into_matrix(heroku_app_targets=HEROKU_APPS):
     """
     Loops through Heroku app names, retrieves environment variables,
     concatenates them into a single DataFrame, and replaces NaNs with "not_set".
@@ -113,11 +121,16 @@ def get_all_vars_in_matrix(heroku_app_targets=HEROKU_APPS):
     Returns:
         pd.DataFrame: DataFrame containing all environment variables for each app.
     """
+    # Initialize a list to store DataFrames
+    all_dataframes = []
     # first column is our required env vars
     df_required = pd.DataFrame(index=REQUIRED_ENV_VARS, columns=["REQUIRED_ENV_VARS"])
     df_required["REQUIRED_ENV_VARS"] = "Yes"
-    # Initialize a list to store DataFrames
-    all_dataframes = [df_required]
+    all_dataframes.append(df_required)
+
+    # second col is env vars in our local environment
+    df_local, _ = get_local_env_vars()
+    all_dataframes.append(df_local)
 
     df_circleci, _ = get_circleci_env_vars("urban-robot")
     all_dataframes.append(df_circleci)
@@ -137,8 +150,10 @@ def get_all_vars_in_matrix(heroku_app_targets=HEROKU_APPS):
 
 
 if __name__ == "__main__":
-    df_final = get_all_vars_in_matrix()
+    df_final = get_all_vars_into_matrix()
     print(df_final)
     # df_ci = get_circleci_env_vars()
     # print(df_ci)
+    # df = get_local_env_vars()
+    # print(df)
 
