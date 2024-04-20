@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/heroku_env_vars.iml" filepath="$PROJECT_DIR$/.idea/heroku_env_vars.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/env_var_environment_compare.iml" filepath="$PROJECT_DIR$/.idea/env_var_environment_compare.iml" />
     </modules>
   </component>
 </project>
