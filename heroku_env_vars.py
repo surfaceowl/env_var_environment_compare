@@ -7,11 +7,12 @@ import os
 
 import pandas as pd
 import requests
+from requests import Session
 
 # Constants
 CIRCLECI_PERSONAL_API_TOKEN = os.environ.get("CIRCLECI_PERSONAL_API_TOKEN")
 CIRCLECI_DEFAULT_APP = "urban-robot"
-
+CURL_CLI_TEST_CMD='''curl -nX GET https://api.heroku.com/apps/urban-robot-dev/config-vars -H "Accept: application/vnd.heroku+json; version=3" -H "Authorization: Bearer $HEROKU_API_KEY"'''
 
 # Set your Heroku API token and app name
 HEROKU_API_TOKEN = HEROKU_API_KEY = os.environ.get("HEROKU_API_KEY")  # https://devcenter.heroku.com/articles/platform-api-quickstart
@@ -67,29 +68,38 @@ def get_heroku_env_vars(app_name="urban-robot-dev"):
     url = f"https://api.heroku.com/apps/{app_name}/config-vars"
 
     # request will fail without an API token in env vars
-    assert HEROKU_API_TOKEN is not None
-
+    assert HEROKU_API_TOKEN is not None, "HEROKU_API_KEY environment variable is not set"
     # Set headers for Heroku API
     headers = {
-        "Authorization": f"Bearer {HEROKU_API_TOKEN}",
+        "Authorization": f"Bearer {HEROKU_API_TOKEN.strip()}",
         "Accept": "application/vnd.heroku+json; version=3",
     }
 
-    # Make the API request
-    response = requests.get(url, headers=headers)
+    with Session() as session:
+        print("check raw HTTP request before it is sent")
+        request = requests.Request('GET', url, headers=headers).prepare()  # Create a prepared request object
+        response = session.send(request)
+        print(request.headers)
+        print("\n")
 
-    # Check if the request was successful & return result
-    if response.status_code == 200:
+        # Make the API request
+        logging.warning(f"url: {url}")
+        # response = requests.get(url, headers=headers)
+        logging.warning("check request headers")
+        logging.warning(response.request.headers)
+
+        # Check if the request was successful & return result
         config_vars = response.json()
-        logging.info(config_vars)
-        df = pd.DataFrame.from_dict(config_vars, orient="index", columns=[app_name])
-        return df, config_vars
-    elif response.status_code == 401 and response.json()["id"] == "unauthorized":
-        logging.error(f"ERROR: {response.status_code} - {response.json()["id"]}: {response.json()["message"]}")
-    else:
-        logging.error("ERROR: Failed to retrieve config vars:", response.status_code)
+        if response.status_code == 200:
+            df = pd.DataFrame.from_dict(config_vars, orient="index", columns=[app_name])
+            return df, config_vars
+        elif response.status_code == 401 and response.json()["id"] == "unauthorized":
+            logging.error(f"ERROR: {response.status_code} - {config_vars["id"]}: {config_vars["message"]}")
+            logging.error(f"{CURL_CLI_TEST_CMD}\n")
+        else:
+            logging.error("ERROR: Failed to retrieve config vars:", response.status_code, config_vars)
 
-    return None, None
+        return None, None
 
 
 def get_circleci_env_vars_keys(circleci_app_name=CIRCLECI_DEFAULT_APP):
@@ -158,7 +168,7 @@ def get_all_vars_into_matrix(heroku_app_targets=HEROKU_APPS):
             all_dataframes.append(df_app_vars)
 
         else:
-            print(f"ERROR: No Heroku app name: {app_name}.  Check Heroku API login credentials.\n")
+            print(f"ERROR: for Heroku app name: {app_name}.  Check Heroku API login credentials.\n")
     df_final = pd.concat(all_dataframes, axis=1).fillna("not_set")
     return df_final.groupby('REQUIRED_ENV_VARS', group_keys=False).apply(lambda x: x.sort_index(), include_groups=False)
 
