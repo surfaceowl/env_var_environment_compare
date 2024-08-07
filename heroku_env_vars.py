@@ -4,18 +4,24 @@ requires that: 1) HEROKU_API_KEY be set, valid and saved in env vars; 2) heroku 
 """
 import logging
 import os
+import subprocess
+import os
+import json
+import pandas as pd
+import logging
 
 import pandas as pd
 import requests
-from requests import Session
+from requests import Session, Request
 
 # Constants
 CIRCLECI_PERSONAL_API_TOKEN = os.environ.get("CIRCLECI_PERSONAL_API_TOKEN")
 CIRCLECI_DEFAULT_APP = "urban-robot"
-CURL_CLI_TEST_CMD='''curl -nX GET https://api.heroku.com/apps/urban-robot-dev/config-vars -H "Accept: application/vnd.heroku+json; version=3" -H "Authorization: Bearer $HEROKU_API_KEY"'''
+CURL_CLI_TEST_CMD = '''curl -nX GET https://api.heroku.com/apps/urban-robot-dev/config-vars -H "Accept: application/vnd.heroku+json; version=3" -H "Authorization: Bearer $HEROKU_API_KEY"'''
 
 # Set your Heroku API token and app name
-HEROKU_API_TOKEN = HEROKU_API_KEY = os.environ.get("HEROKU_API_KEY")  # https://devcenter.heroku.com/articles/platform-api-quickstart
+HEROKU_API_TOKEN = HEROKU_API_KEY = os.environ.get(
+    "HEROKU_API_KEY")  # https://devcenter.heroku.com/articles/platform-api-quickstart
 HEROKU_APPS = ["urban-robot-dev", "urban-robot-staging", "urban-robot"]
 REQUIRED_ENV_VARS = [
     "AWS_ACCESS_KEY_ID",
@@ -58,8 +64,53 @@ def get_local_env_vars():
     return df_env_vars, env_vars_data
 
 
+def get_heroku_env_vars_with_curl(app_name="urban-robot-dev"):
+    """
+    Retrieves Heroku env vars from a single Heroku app using curl.
+    """
+
+    url = f"https://api.heroku.com/apps/{app_name}/config-vars"
+
+    # Ensure API key is present
+    HEROKU_API_TOKEN = os.getenv("HEROKU_API_KEY")
+    assert HEROKU_API_TOKEN is not None, "HEROKU_API_KEY environment variable is not set"
+
+    # Check if curl is installed
+    try:
+        subprocess.run(["curl", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        raise RuntimeError("curl is not installed. Please install curl to use this function.")
+
+    # Construct the curl command
+    curl_cmd = [
+        "curl",
+        "-s",       # Silent mode
+        "-X", "GET", # GET request
+        "-H", f"Accept: application/vnd.heroku+json; version=3",
+        "-H", f"Authorization: Bearer {HEROKU_API_TOKEN.strip()}",
+        url
+    ]
+
+    try:
+        # Execute the curl command
+        result = subprocess.run(curl_cmd, capture_output=True, text=True)
+
+        # Check for success
+        if result.returncode == 0:
+            config_vars = json.loads(result.stdout)
+            df = pd.DataFrame.from_dict(config_vars, orient="index", columns=[app_name])
+            return df, config_vars
+        else:
+            logging.error("ERROR: Failed to retrieve config vars using curl:")
+            logging.error(result.stderr)  # Log the error message from curl
+    except subprocess.CalledProcessError as e:
+        logging.error("ERROR: Error occurred while executing curl:", e)
+
+    return None, None
+
 def get_heroku_env_vars(app_name="urban-robot-dev"):
     """
+    using python requests
     Retrieves heroku env vars from a single heroku app
     :param app_name: string
     :return: pandas data frame with heroku env vars, and json with heroku env vars
@@ -71,16 +122,21 @@ def get_heroku_env_vars(app_name="urban-robot-dev"):
     assert HEROKU_API_TOKEN is not None, "HEROKU_API_KEY environment variable is not set"
     # Set headers for Heroku API
     headers = {
-        "Authorization": f"Bearer {HEROKU_API_TOKEN.strip()}",
         "Accept": "application/vnd.heroku+json; version=3",
+        "Authorization": f"Bearer {HEROKU_API_TOKEN.strip()}",
     }
 
     with Session() as session:
-        print("check raw HTTP request before it is sent")
-        request = requests.Request('GET', url, headers=headers).prepare()  # Create a prepared request object
-        response = session.send(request)
-        print(request.headers)
-        print("\n")
+        req = Request('GET', url, headers=headers)
+        prepped = session.prepare_request(req)
+        prepped.headers.pop('User-Agent', None)
+        prepped.headers.pop('Accept-Encoding', None)
+        prepped.headers.pop('Connection', None)
+
+
+        response = session.send(prepped)
+        # Debugging: Print the raw headers (should not contain User-Agent)
+        print(response.request.headers)
 
         # Make the API request
         logging.warning(f"url: {url}")
@@ -158,8 +214,8 @@ def get_all_vars_into_matrix(heroku_app_targets=HEROKU_APPS):
 
     # get Heroku env vars
     for app_name in heroku_app_targets:
-        # Get DataFrame for the current app (assuming get_heroku_env_vars exists)
-        df_app_vars, _ = get_heroku_env_vars(app_name)
+        # Get DataFrame for the current app (using curl version since Requests is strangely failing)
+        df_app_vars, _ = get_heroku_env_vars_with_curl(app_name)
 
         if df_app_vars is not None:
             # Handle missing values (replace NaN with "not_set")
@@ -173,10 +229,7 @@ def get_all_vars_into_matrix(heroku_app_targets=HEROKU_APPS):
     return df_final.groupby('REQUIRED_ENV_VARS', group_keys=False).apply(lambda x: x.sort_index(), include_groups=False)
 
 
-
 if __name__ == "__main__":
     df_final = get_all_vars_into_matrix()
 
     print(df_final)
-
-
