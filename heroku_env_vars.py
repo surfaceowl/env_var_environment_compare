@@ -2,18 +2,26 @@
 module to retrieve and compare heroku env vars from a list of heroku apps
 requires that: 1) HEROKU_API_KEY be set, valid and saved in env vars; 2) heroku cli be installed
 """
+import logging
 import os
+import subprocess
+import os
+import json
+import pandas as pd
+import logging
 
 import pandas as pd
 import requests
+from requests import Session, Request
 
 # Constants
 CIRCLECI_PERSONAL_API_TOKEN = os.environ.get("CIRCLECI_PERSONAL_API_TOKEN")
 CIRCLECI_DEFAULT_APP = "urban-robot"
-
+CURL_CLI_TEST_CMD = '''curl -nX GET https://api.heroku.com/apps/urban-robot-dev/config-vars -H "Accept: application/vnd.heroku+json; version=3" -H "Authorization: Bearer $HEROKU_API_KEY"'''
 
 # Set your Heroku API token and app name
-HEROKU_API_TOKEN = os.environ.get("HEROKU_API_TOKEN")
+HEROKU_API_TOKEN = HEROKU_API_KEY = os.environ.get(
+    "HEROKU_API_KEY")  # https://devcenter.heroku.com/articles/platform-api-quickstart
 HEROKU_APPS = ["urban-robot-dev", "urban-robot-staging", "urban-robot"]
 REQUIRED_ENV_VARS = [
     "AWS_ACCESS_KEY_ID",
@@ -39,6 +47,9 @@ REQUIRED_ENV_VARS = [
     "SENDGRID_PASSWORD",
     "SENDGRID_SURFACEOWL_API_KEY",
     "SENDGRID_USERNAME",
+    "SURFACE_OWL_API_PREFIX",
+    "SURFACE_OWL_API_VERSION",
+    "SURFACE_OWL_PYTHON_PATH",
     "SQS_QUEUE_URL",
     "WEB_CONCURRENCY",
     "DAEMON_CONCURRENCY"
@@ -53,8 +64,53 @@ def get_local_env_vars():
     return df_env_vars, env_vars_data
 
 
+def get_heroku_env_vars_with_curl(app_name="urban-robot-dev"):
+    """
+    Retrieves Heroku env vars from a single Heroku app using curl.
+    """
+
+    url = f"https://api.heroku.com/apps/{app_name}/config-vars"
+
+    # Ensure API key is present
+    HEROKU_API_TOKEN = os.getenv("HEROKU_API_KEY")
+    assert HEROKU_API_TOKEN is not None, "HEROKU_API_KEY environment variable is not set"
+
+    # Check if curl is installed
+    try:
+        subprocess.run(["curl", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        raise RuntimeError("curl is not installed. Please install curl to use this function.")
+
+    # Construct the curl command
+    curl_cmd = [
+        "curl",
+        "-s",       # Silent mode
+        "-X", "GET", # GET request
+        "-H", f"Accept: application/vnd.heroku+json; version=3",
+        "-H", f"Authorization: Bearer {HEROKU_API_TOKEN.strip()}",
+        url
+    ]
+
+    try:
+        # Execute the curl command
+        result = subprocess.run(curl_cmd, capture_output=True, text=True)
+
+        # Check for success
+        if result.returncode == 0:
+            config_vars = json.loads(result.stdout)
+            df = pd.DataFrame.from_dict(config_vars, orient="index", columns=[app_name])
+            return df, config_vars
+        else:
+            logging.error("ERROR: Failed to retrieve config vars using curl:")
+            logging.error(result.stderr)  # Log the error message from curl
+    except subprocess.CalledProcessError as e:
+        logging.error("ERROR: Error occurred while executing curl:", e)
+
+    return None, None
+
 def get_heroku_env_vars(app_name="urban-robot-dev"):
     """
+    using python requests
     Retrieves heroku env vars from a single heroku app
     :param app_name: string
     :return: pandas data frame with heroku env vars, and json with heroku env vars
@@ -62,27 +118,47 @@ def get_heroku_env_vars(app_name="urban-robot-dev"):
     app_name = str(app_name)
     url = f"https://api.heroku.com/apps/{app_name}/config-vars"
 
+    # request will fail without an API token in env vars
+    assert HEROKU_API_TOKEN is not None, "HEROKU_API_KEY environment variable is not set"
     # Set headers for Heroku API
     headers = {
-        "Authorization": f"Bearer {HEROKU_API_TOKEN}",
         "Accept": "application/vnd.heroku+json; version=3",
+        "Authorization": f"Bearer {HEROKU_API_TOKEN.strip()}",
     }
 
-    # Make the API request
-    response = requests.get(url, headers=headers)
+    with Session() as session:
+        req = Request('GET', url, headers=headers)
+        prepped = session.prepare_request(req)
+        prepped.headers.pop('User-Agent', None)
+        prepped.headers.pop('Accept-Encoding', None)
+        prepped.headers.pop('Connection', None)
 
-    # Check if the request was successful & return result
-    if response.status_code == 200:
+
+        response = session.send(prepped)
+        # Debugging: Print the raw headers (should not contain User-Agent)
+        print(response.request.headers)
+
+        # Make the API request
+        logging.warning(f"url: {url}")
+        # response = requests.get(url, headers=headers)
+        logging.warning("check request headers")
+        logging.warning(response.request.headers)
+
+        # Check if the request was successful & return result
         config_vars = response.json()
-        print(config_vars)
-        df = pd.DataFrame.from_dict(config_vars, orient="index", columns=[app_name])
-        return df, config_vars
-    else:
-        print("Failed to retrieve config vars:", response.status_code)
+        if response.status_code == 200:
+            df = pd.DataFrame.from_dict(config_vars, orient="index", columns=[app_name])
+            return df, config_vars
+        elif response.status_code == 401 and response.json()["id"] == "unauthorized":
+            logging.error(f"ERROR: {response.status_code} - {config_vars["id"]}: {config_vars["message"]}")
+            logging.error(f"{CURL_CLI_TEST_CMD}\n")
+        else:
+            logging.error("ERROR: Failed to retrieve config vars:", response.status_code, config_vars)
+
         return None, None
 
 
-def get_circleci_env_vars(circleci_app_name=CIRCLECI_DEFAULT_APP):
+def get_circleci_env_vars_keys(circleci_app_name=CIRCLECI_DEFAULT_APP):
     """Fetches and returns environment variables from a CircleCI project using the requests module."""
     CIRCLECI_PROJECT_SLUG = f"gh/surfaceowl-ai/{circleci_app_name}"
     CIRCLECI_API_URL = f"https://circleci.com/api/v2/project/{CIRCLECI_PROJECT_SLUG}/envvar"
@@ -93,21 +169,25 @@ def get_circleci_env_vars(circleci_app_name=CIRCLECI_DEFAULT_APP):
     }
 
     try:
-        response = requests.get(CIRCLECI_API_URL, headers=headers)
-        response.raise_for_status()  # Check for HTTP request errors
-        payload_data = response.json().get('items', [])
-
-        df_circleci = pd.DataFrame(payload_data).fillna("not_set")
-        df_circleci.set_index('name', inplace=True)
-        df_circleci.columns = [f'CIRCLECI_{col}' for col in df_circleci.columns]
-        df_circleci = df_circleci[["CIRCLECI_created_at", "CIRCLECI_value"]]
-
-        print(df_circleci)
-        return df_circleci, payload_data  # Return DataFrame and raw data
-
+        return get_circleci_env_vars_keys_values_to_df(CIRCLECI_API_URL, headers)
     except requests.RequestException as e:
-        print(f"An error occurred: {e}")
+        logging.error(f"An error occurred: {e}")
         return None, None
+
+
+# TODO Rename this here and in `get_circleci_env_vars`
+def get_circleci_env_vars_keys_values_to_df(CIRCLECI_API_URL, headers):
+    response = requests.get(CIRCLECI_API_URL, headers=headers)
+    response.raise_for_status()  # Check for HTTP request errors
+    payload_data = response.json().get('items', [])
+
+    df_circleci = pd.DataFrame(payload_data).fillna("not_set")
+    df_circleci.set_index('name', inplace=True)
+    df_circleci.columns = [f'CIRCLECI_{col}' for col in df_circleci.columns]
+    df_circleci = df_circleci[["CIRCLECI_created_at", "CIRCLECI_value"]]
+
+    logging.info(df_circleci)
+    return df_circleci, payload_data  # Return DataFrame and raw data
 
 
 def get_all_vars_into_matrix(heroku_app_targets=HEROKU_APPS):
@@ -129,28 +209,27 @@ def get_all_vars_into_matrix(heroku_app_targets=HEROKU_APPS):
     df_local, _ = get_local_env_vars()
     all_dataframes.append(df_local)
 
-    df_circleci, _ = get_circleci_env_vars("urban-robot")
+    df_circleci, _ = get_circleci_env_vars_keys("urban-robot")
     all_dataframes.append(df_circleci)
 
     # get Heroku env vars
     for app_name in heroku_app_targets:
-        # Get DataFrame for the current app (assuming get_heroku_env_vars exists)
-        df_app_vars, _ = get_heroku_env_vars(app_name)
+        # Get DataFrame for the current app (using curl version since Requests is strangely failing)
+        df_app_vars, _ = get_heroku_env_vars_with_curl(app_name)
 
-        # Handle missing values (replace NaN with "not_set")
-        df_app_vars = df_app_vars.fillna("not_set")
+        if df_app_vars is not None:
+            # Handle missing values (replace NaN with "not_set")
+            # df_app_vars = df_app_vars.fillna("not_set")
+            # Append the DataFrame to the list
+            all_dataframes.append(df_app_vars)
 
-        # Append the DataFrame to the list
-        all_dataframes.append(df_app_vars)
-
+        else:
+            print(f"ERROR: for Heroku app name: {app_name}.  Check Heroku API login credentials.\n")
     df_final = pd.concat(all_dataframes, axis=1).fillna("not_set")
-    return df_final.groupby('REQUIRED_ENV_VARS', group_keys=False).apply(lambda x: x.sort_index())
-
+    return df_final.groupby('REQUIRED_ENV_VARS', group_keys=False).apply(lambda x: x.sort_index(), include_groups=False)
 
 
 if __name__ == "__main__":
     df_final = get_all_vars_into_matrix()
 
     print(df_final)
-
-
