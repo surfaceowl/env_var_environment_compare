@@ -2,5 +2,5 @@ jupyterlab==4.5.10
 matplotlib==3.8.4
 numpy==1.26.4
 pandas==2.2.2
-pip==26.1.2
+pip==26.2
 requests==2.33.0
